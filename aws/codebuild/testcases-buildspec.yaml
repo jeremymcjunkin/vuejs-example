@@ -1,0 +1,11 @@
+version: 0.2
+env:
+  variables:
+    SOME_VAR: "someValue"
+
+phases:
+  install:
+    commands:
+      - env
+  pre_build:
+    commands:

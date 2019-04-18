@@ -1,0 +1,279 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Continous Delievery: Naming convention:<app>--<branch>--<service> This template
+  builds an AWS CodePipeline pipeline that implements a continuous delivery release
+  process for deploying static websites to s3 into test/staging/prod folders in
+  an s3 bucket.
+
+Parameters:
+  NotificationArn:
+    Description: ARN to receive notifications for approvals
+    Type: String
+    Default: arn:aws:sns:us-west-2:884108878943:NotifyMe
+  GitHubOwner:
+    Description: The owner of the gihub repo
+    Type: String
+    Default: jeremymcjunkin
+  OAuthToken:
+    Description: The GitHub OAuthToken so CodePipeline can get the code
+    Type: String
+    NoEcho: true
+  BuildTimeout:
+    Description: Timeout in minutes for the build
+    Type: Number
+    Default: 15
+  BuildTimeoutTest:
+    Description: Timeout in minutes for the lint and tests
+    Type: Number
+    Default: 5
+  CodeBuildImageTest:
+    Description: Image for the CodeBuild container that runs linting and test cases.
+    Type: String
+    Default: aws/codebuild/nodejs:10.14.1
+  CodeBuildImage:
+    Description: Image for the CodeBuild container that builds the final app docker image.  See https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html
+    Type: String
+    Default: aws/codebuild/nodejs:10.14.1
+  S3Bucket:
+    Description: The S3 bucket to deploy the code to
+    Type: String
+    Default: test--static.clearskyconsultingllc.com
+  LintTestBuildSpecPath:
+    Description: Path to the buildspec used to run testcases, relative to your codebase
+    Type: String
+    Default: aws/codebuild/testcases-buildspec.yaml
+  CodeBuildProjectBuildSpecPath:
+    Description: Path to the buildspec used to build your app image, relative to your codebase
+    Type: String
+    Default: aws/codebuild/deploy-static.yaml   
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Test cases and linting"
+        Parameters:
+          - CodeBuildImageTest
+          - LintTestBuildSpecPath
+          - BuildTimeoutTest          
+      - Label:
+          default: "Build"
+        Parameters:
+          - CodeBuildProjectBuildSpecPath
+          - CodeBuildImage
+          - BuildTimeout
+
+Resources:
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodeBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - "logs:CreateLogGroup"
+                - "logs:CreateLogStream"
+                - "logs:PutLogEvents"
+                Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+              - Action:
+                - "s3:PutObject"
+                - "s3:GetObject"
+                - "s3:GetObjectVersion"
+                Effect: Allow
+                Resource:
+                  - "arn:aws:s3:::codepipeline-us-east-1-*"
+              - Action:
+                - 's3:*'
+                - 'ecr:*'
+                Effect: Allow
+                Resource: '*'
+
+  CodeBuildProjectTestcases:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ['--', ['testcases',!Ref 'AWS::StackName']]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImageTest
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref LintTestBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeoutTest
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref 'AWS::StackName'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: STAGE
+            Value: test
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref CodeBuildProjectBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeout
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref 'ArtifactStoreBucket'
+        Type: S3
+      DisableInboundStageTransitions: []
+      Name: !Ref AWS::StackName
+      RoleArn: !GetAtt PipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: '1'
+              OutputArtifacts:
+                - Name: MyApp
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Select [ 0, !Split [ '--', !Ref 'AWS::StackName' ] ]
+                PollForSourceChanges: true
+                Branch: !Select [ 1, !Split [ '--', !Ref 'AWS::StackName' ] ]
+                OAuthToken: !Ref OAuthToken
+              RunOrder: 1
+        - Name: Testcases
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              OutputArtifacts:
+                - Name: MyAppTestcases
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectTestcases
+              RunOrder: 1             
+        - Name: Deploy Test
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              OutputArtifacts:
+                - Name: MyAppBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+            - Name: ApproveTest
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                NotificationArn: !Ref NotificationArn
+              RunOrder: 2
+  CFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CloudFormationRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - '*'
+                Effect: Allow
+                Resource: '*'
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codepipeline.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 's3:*'
+                - 'cloudformation:CreateStack'
+                - 'cloudformation:DescribeStacks'
+                - 'cloudformation:DeleteStack'
+                - 'cloudformation:UpdateStack'
+                - 'cloudformation:CreateChangeSet'
+                - 'cloudformation:ExecuteChangeSet'
+                - 'cloudformation:DeleteChangeSet'
+                - 'cloudformation:DescribeChangeSet'
+                - 'cloudformation:SetStackPolicy'
+                - 'iam:PassRole'
+                - 'sns:Publish'
+                - 'codebuild:BatchGetBuilds'
+                - 'codebuild:StartBuild'
+                Effect: Allow
+                Resource: '*'

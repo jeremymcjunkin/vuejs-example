@@ -1,0 +1,18 @@
+version: 0.2
+
+phases:
+  install:
+    commands:   
+      - env          
+      - npm install     
+  pre_build:
+    commands:
+      - env
+  build:
+    commands:
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - echo Commit hash $COMMIT_HASH
+      - npm run build
+  post_build:
+    commands:
+      - aws s3 sync ./dist s3://${S3_BUCKET}/${STAGE}/
