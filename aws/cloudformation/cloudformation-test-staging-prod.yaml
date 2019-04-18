@@ -131,10 +131,10 @@ Resources:
         BuildSpec: !Ref LintTestBuildSpecPath
       TimeoutInMinutes: !Ref BuildTimeoutTest
 
-  CodeBuildProject:
+  CodeBuildProjectTest:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Ref 'AWS::StackName'
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'test']]
       Artifacts:
         Type: CODEPIPELINE
       Environment:
@@ -151,6 +151,58 @@ Resources:
             Value: !Ref S3Bucket
           - Name: STAGE
             Value: test
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref CodeBuildProjectBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeout
+
+  CodeBuildProjectStaging:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'staging']]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: STAGE
+            Value: staging
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref CodeBuildProjectBuildSpecPath
+      TimeoutInMinutes: !Ref BuildTimeout
+
+  CodeBuildProjectProd:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'prod']]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+        Image: !Ref CodeBuildImage
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: STAGE
+            Value: prod
       ServiceRole: !Ref CodeBuildRole
       Source:
         Type: CODEPIPELINE
@@ -199,7 +251,7 @@ Resources:
               Configuration:
                 ProjectName: !Ref CodeBuildProjectTestcases
               RunOrder: 1             
-        - Name: Deploy Test
+        - Name: DeployTest
           Actions:
             - Name: CodeBuild
               InputArtifacts:
@@ -209,10 +261,8 @@ Resources:
                 Owner: AWS
                 Provider: CodeBuild
                 Version: '1'
-              OutputArtifacts:
-                - Name: MyAppBuild
               Configuration:
-                ProjectName: !Ref CodeBuildProject
+                ProjectName: !Ref CodeBuildProjectTest
               RunOrder: 1
             - Name: ApproveTest
               ActionTypeId:
@@ -223,6 +273,50 @@ Resources:
               Configuration:
                 NotificationArn: !Ref NotificationArn
               RunOrder: 2
+        - Name: DeployStaging
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectStaging
+              RunOrder: 1
+            - Name: ApproveStaging
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                NotificationArn: !Ref NotificationArn
+              RunOrder: 3
+        - Name: DeployProd
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectProd
+              RunOrder: 1
+            - Name: ApproveProd
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                NotificationArn: !Ref NotificationArn
+              RunOrder: 4
   CFNRole:
     Type: AWS::IAM::Role
     Properties:
