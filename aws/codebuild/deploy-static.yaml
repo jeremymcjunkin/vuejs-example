@@ -16,3 +16,4 @@ phases:
   post_build:
     commands:
       - aws s3 sync ./dist s3://${S3_BUCKET}/${STAGE}/
+      # TODO: create cloudfront invalidation?
